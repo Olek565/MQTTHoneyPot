@@ -39,6 +39,7 @@ def setup_logging(log_dir="mqtt_honeypot_logs",
     log_path = os.path.join(current_directory, log_dir)
     os.makedirs(log_path, exist_ok=True)
 
+
     log_file_path = os.path.join(log_path, log_file)
     handler = RotatingFileHandler(log_file_path, maxBytes=max_log_size, backupCount=backup_count, encoding='utf-8')
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
