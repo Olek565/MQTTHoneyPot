@@ -353,7 +353,7 @@ if __name__ == "__main__":
 
     try:
         client.username_pw_set("rw", password="readwrite")
-        client.connect("mqtt_broker", 1884, 60)
+        client.connect("mqtt_broker", 1883, 60)
 
         threading.Thread(target=start_packet_sniffer, daemon=True).start()
         client.loop_start()
