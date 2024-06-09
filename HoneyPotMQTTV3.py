@@ -52,13 +52,14 @@ def setup_logging(log_dir="mqtt_honeypot_logs",
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
-    # Loki handler
-    loki_handler = logging_loki.LokiHandler(
-        url="http://loki:3100/loki/api/v1/push",
-        tags={"application": "mqtt_honeypot"},
-        version="1"
-    )
-    logging.getLogger('').addHandler(loki_handler)
+    # # Loki handler
+    # loki_handler = logging_loki.LokiHandler(
+    #     url="http://loki:3100/loki/api/v1/push",
+    #     tags={"application": "mqtt_honeypot"},
+    #     version="1"
+    # )
+    # loki_handler.setFormatter(formatter)
+    # logging.getLogger('').addHandler(loki_handler)
 
 
 def init_geoip_reader(directory_name="GeoLite2-City_20240517", db_file="GeoLite2-City.mmdb"):
@@ -352,7 +353,7 @@ if __name__ == "__main__":
 
     try:
         client.username_pw_set("rw", password="readwrite")
-        client.connect("mqtt_broker", 1883, 60)
+        client.connect("mqtt_broker", 1884, 60)
 
         threading.Thread(target=start_packet_sniffer, daemon=True).start()
         client.loop_start()

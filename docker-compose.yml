@@ -1,5 +1,9 @@
 version: '3.8'
 
+networks:
+  monitoring:
+    driver: bridge
+
 services:
   loki:
     image: grafana/loki:latest
@@ -7,7 +11,10 @@ services:
       - "3100:3100"
     volumes:
       - ./loki-config.yaml:/etc/loki/local-config.yaml
+      - loki-data:/etc/loki
     command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - monitoring
 
   grafana:
     image: grafana/grafana:latest
@@ -17,25 +24,46 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     depends_on:
       - loki
+    networks:
+      - monitoring
 
   mqtt_broker:
     image: eclipse-mosquitto:latest
     ports:
-      - "1883:1883"
+      - "1884:1883"
       - "9001:9001"
     volumes:
       - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
+    networks:
+      - monitoring
 
   mqtt_honeypot:
     build: .
     volumes:
       - ./mqtt_honeypot_logs:/usr/src/app/mqtt_honeypot_logs
     depends_on:
-      - loki
-      - grafana
       - mqtt_broker
+      - alloy
+      - -loki
+    networks:
+      - monitoring
+
+  alloy:
+    image: grafana/alloy
+    ports:
+      - "8080:8080"
+    environment:
+      - ALLOY_LOG_LEVEL=info
+      - ALLOY_LOKI_URL=http://loki:3100/loki/api/v1/push
+    volumes:
+      - ./alloy-config.yaml:/etc/alloy/config.yaml
+      - ./mqtt_honeypot_logs:/usr/src/app/mqtt_honeypot_logs
+    networks:
+      - monitoring
+
 
 volumes:
+  loki-data:
   mqtt_honeypot_logs:
