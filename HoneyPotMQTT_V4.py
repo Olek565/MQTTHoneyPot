@@ -5,7 +5,9 @@ import logging_loki
 from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime, timedelta
-from scapy.all import sniff, IP, TCP, Ether, Raw
+from scapy.all import sniff, IP, TCP, Ether, Raw, load_contrib, get_if_list, IPv6
+# from scapy.layers.mqtt import MQTT, MQTTSubscribe
+from scapy.contrib.mqtt import MQTT
 import scapy.all as scapy
 from collections import defaultdict, deque
 import struct
@@ -14,6 +16,7 @@ import threading
 from geoip2.database import Reader
 import time
 import requests
+
 
 
 def get_script_directory() -> str:
@@ -145,44 +148,80 @@ def on_publish(client, userdata, mid):
 
 
 def on_message(client, userdata, msg):
+    # Capture network information around message receive (optional)
     try:
-        client_ip = client._sock.getpeername()[0] if client._sock else "Unknown"
-        client_id = client._client_id.decode("utf-8") if client._client_id else "Unknown"
-        reader = userdata
-        # Check if location is None
-        if reader is None:
-            country_name = "Unknown"
-        else:
-            location = reader.city(client_ip)
-            country_name = location.country.name
-        # Check if message is None
-        if msg is None:
-            payload = "Unknown"
-        else:
-            payload = msg.payload.decode(errors='ignore')
+        captured_packets = sniff(count=1, timeout=0.1, filter="tcp")  # Capture only TCP packets
+    except OSError:
+        captured_packets = None
 
-        logging.info(f"Received message on: Topic: {msg.topic} | msg: {payload} | Client_ID: {client_id} | Client_IP: {client_ip} | Country: {country_name}")
+    # Extract source IP and potential MQTT client ID from captured packets
+    if msg is None:
+        payload = "Unknown"
+    else:
+        payload = msg.payload.decode(errors='ignore')
+    reader = userdata
+    # Check if location is None
+    # if reader is None:
+    #     country_name = "Unknown"
+    # else:
+    #     location = reader.city(client_ip)
+    #     country_name = location.country.name
+    # Check if message is None
+    source_ip = None
+    mqtt_client_id = None
+    if captured_packets:
+        for packet in captured_packets:
+            if (packet.haslayer(TCP) and packet.haslayer(IP)):
+                source_ip = packet[IP].src
+                # Check for potential MQTT traffic based on port and flags (heuristic)
+                if packet[TCP].dport == 1883 and (packet[TCP].flags & 0x0F) == 0x02:  # Check for SYN flag
+                    try:
+                        # Attempt to decode MQTT payload assuming basic structure
+                        mqtt_data = packet[TCP].payload.decode('utf-8')
+                        # Extract potential client ID from the first part of the payload (heuristic)
+                        mqtt_client_id = mqtt_data.split()[0]
+                    except (UnicodeDecodeError, IndexError):
+                        pass  # Handle potential decoding or parsing errors
+    logging.info(f"Received message on: Topic: {msg.topic} | msg: {payload} | Client_ID: {mqtt_client_id} | Client_IP: {source_ip}") #| Country: {country_name}")
 
-        with mutex:
-            if client._username == VALID_USERNAME and client._password == VALID_PASSWORD:
-                logging.info(f"Authentication successful for: Client_IP: {client_ip} | Country: {location}")
-            else:
-                logging.warning(f"Authentication failed for: Client_IP: {client_ip} | Country: {country_name} | User: {client._username} | Password: {client._password}")
-                failed_connections[client_ip] += 1
-                login_attempts[client_ip].append((client._username, client._password))
-                if failed_connections[client_ip] > BRUTE_FORCE_THRESHOLD:
-                    logging.warning(f"asta printeaaza!!!!!!!!! Potential brute force attack detected from Client_IP: {client_ip} | number_of_tries: {failed_connections[client_ip]} | Country: {country_name} | Credentials: \n\tU: {[attempt[0] for attempts in login_attempts.values() for attempt in attempts]} \n\tP: {[attempt[1] for attempts in login_attempts.values() for attempt in attempts]}")
-
-            message_counts[client_ip].append(time.time())
-            if len(message_counts[client_ip]) > DOS_THRESHOLD:
-                message_counts[client_ip].popleft()
-
-            if len(message_counts[client_ip]) > 1:
-                time_delta = message_counts[client_ip][-1] - message_counts[client_ip][0]
-                if time_delta < 0.001:
-                    logging.warning(f" asta printeaaza!!!!!!!!! Potential DoS attack detected from Client_IP: {client_ip} | Country: {country_name} | Number of messages in {time_delta} ms: {len(message_counts[client_ip])}")
-    except Exception as e:
-        logging.error(f"[on_message] Error on getting the country/city from DB: {e}")
+    # try:
+    #     client_ip = client._sock.getpeername()[0] if client._sock else "Unknown"
+    #     client_id = client._client_id.decode("utf-8") if client._client_id else "Unknown"
+    #     reader = userdata
+    #     # Check if location is None
+    #     if reader is None:
+    #         country_name = "Unknown"
+    #     else:
+    #         location = reader.city(client_ip)
+    #         country_name = location.country.name
+    #     # Check if message is None
+    #     if msg is None:
+    #         payload = "Unknown"
+    #     else:
+    #         payload = msg.payload.decode(errors='ignore')
+    #
+    #     logging.info(f"Received message on: Topic: {msg.topic} | msg: {payload} | Client_ID: {client_id} | Client_IP: {client_ip} | Country: {country_name}")
+    #
+    #     with mutex:
+    #         if client._username == VALID_USERNAME and client._password == VALID_PASSWORD:
+    #             logging.info(f"Authentication successful for: Client_IP: {client_ip} | Country: {location}")
+    #         else:
+    #             logging.warning(f"Authentication failed for: Client_IP: {client_ip} | Country: {country_name} | User: {client._username} | Password: {client._password}")
+    #             failed_connections[client_ip] += 1
+    #             login_attempts[client_ip].append((client._username, client._password))
+    #             if failed_connections[client_ip] > BRUTE_FORCE_THRESHOLD:
+    #                 logging.warning(f"asta printeaaza!!!!!!!!! Potential brute force attack detected from Client_IP: {client_ip} | number_of_tries: {failed_connections[client_ip]} | Country: {country_name} | Credentials: \n\tU: {[attempt[0] for attempts in login_attempts.values() for attempt in attempts]} \n\tP: {[attempt[1] for attempts in login_attempts.values() for attempt in attempts]}")
+    #
+    #         message_counts[client_ip].append(time.time())
+    #         if len(message_counts[client_ip]) > DOS_THRESHOLD:
+    #             message_counts[client_ip].popleft()
+    #
+    #         if len(message_counts[client_ip]) > 1:
+    #             time_delta = message_counts[client_ip][-1] - message_counts[client_ip][0]
+    #             if time_delta < 0.001:
+    #                 logging.warning(f" asta printeaaza!!!!!!!!! Potential DoS attack detected from Client_IP: {client_ip} | Country: {country_name} | Number of messages in {time_delta} ms: {len(message_counts[client_ip])}")
+    # except Exception as e:
+    #     logging.error(f"[on_message] Error on getting the country/city from DB: {e}")
 
 
 def on_subscribe(client, userdata, mid, granted_qos):
@@ -306,28 +345,46 @@ def packet_callback(packet):
         if Raw in packet:
             layers.append(packet[Raw].summary())
 
-        if IP in packet and TCP in packet:
-            ip_src = packet[IP].src
+        # Check if the packet has an MQTT layer
+        if MQTT in packet:
+            ip_src = packet[IPv6].src
             try:
-                sport = packet[TCP].sport
-                dport = packet[TCP].dport
-                payload = bytes(packet[TCP].payload).decode(errors='ignore')
-
-                with mutex:
-                    # logging.info(f"Packet captured: {packet.show(dump=True)}")
-                    # logging.info(f"Packet captured: {" | ".join(packet.show(dump=True).split("\n"))}")
-                    logging.info(f"Packet captured: {re.sub(r'\s+', ' ', packet.show(dump=True))}")
-
-
-                if (dport == 1883 or dport == 1884) and packet[TCP].payload:
-                    payload = bytes(packet[TCP].payload)
-                    if payload[0] >> 4 == 1:
-                        client_id, username, password = parse_mqtt_connect_packet(payload[1:])
-                        logging.info(f"MQTT Connect Packet: Client ID: {client_id} | Username: {username} | Password: {password}")
-                        if username or password:
-                            logging.warning(f"ALERT: Credentials visible in MQTT Connect packet from {ip_src}:{sport}. Username: {username}, Password: {password}")
+                if reader is None:
+                    country_name = "Unknown"
+                else:
+                    location = reader.city(ip_src)
+                    country_name = location.country.name
             except Exception as e:
-                logging.error(f"Error on processing packet: {e}")
+                country_name = "Unknown"
+                logging.error(f"[packet_callback] Error on getting the country/city from DB: {e}")
+
+            with mutex:
+                # logging.info(f"Packet captured: {packet.show(dump=True)}")
+                # logging.info(f"Packet captured: {" | ".join(packet.show(dump=True).split("\n"))}")
+                logging.info(f"MQTT Packet Captured from Country={country_name}: {re.sub(r'\s+', ' ', packet.show(dump=True))}")
+
+        # if IP in packet and TCP in packet:
+        #     ip_src = packet[IP].src
+        #     try:
+        #         sport = packet[TCP].sport
+        #         dport = packet[TCP].dport
+        #         payload = bytes(packet[TCP].payload).decode(errors='ignore')
+        #
+        #         with mutex:
+        #             # logging.info(f"Packet captured: {packet.show(dump=True)}")
+        #             # logging.info(f"Packet captured: {" | ".join(packet.show(dump=True).split("\n"))}")
+        #             logging.info(f"Packet captured: {re.sub(r'\s+', ' ', packet.show(dump=True))}")
+        #
+        #
+        #         if (dport == 1883 or dport == 1884) and packet[TCP].payload:
+        #             payload = bytes(packet[TCP].payload)
+        #             if payload[0] >> 4 == 1:
+        #                 client_id, username, password = parse_mqtt_connect_packet(payload[1:])
+        #                 logging.info(f"MQTT Connect Packet: Client ID: {client_id} | Username: {username} | Password: {password}")
+        #                 if username or password:
+        #                     logging.warning(f"ALERT: Credentials visible in MQTT Connect packet from {ip_src}:{sport}. Username: {username}, Password: {password}")
+        #     except Exception as e:
+        #         logging.error(f"Error on processing packet: {e}")
     except Exception as e:
         logging.error(f"Packet callback error: {e}")
 
@@ -354,7 +411,11 @@ def start_packet_sniffer(interface=None):
 
         # Start packet sniffer
         # scapy.sniff(iface=interface, filter="host localhost", prn=packet_callback, store=0)
-        scapy.sniff(filter="tcp port 1883", prn=packet_callback, store=0)
+        # List available network interfaces
+        # logging.info("Available network interfaces:", get_if_list())
+        iface_name = '\\Device\\NPF_Loopback'  # Replace with your network interface name
+
+        scapy.sniff(iface=iface_name, filter="tcp port 1883", prn=packet_callback, store=0)
     except Exception as e:
         logging.error(f"Packet sniffer error: {e}")
 
@@ -371,7 +432,7 @@ failed_connections = defaultdict(int)
 message_counts = defaultdict(deque)
 login_attempts = defaultdict(list)
 mutex = threading.Lock()
-host = "185.237.15.251" #"localhost"#"test.mosquitto.org"
+host = "localhost" #"185.237.15.251" #"localhost"#"test.mosquitto.org"
 port = 1883
 
 
