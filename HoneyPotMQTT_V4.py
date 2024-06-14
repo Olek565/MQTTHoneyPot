@@ -347,7 +347,14 @@ def packet_callback(packet):
 
         # Check if the packet has an MQTT layer
         if MQTT in packet:
-            ip_src = packet[IPv6].src
+
+            if packet[IPv6]:
+                ip_src = packet[IPv6].src
+            elif packet[IP]:
+                ip_src = packet[IP].src
+            else:
+                ip_src = "Unknown"
+
             try:
                 if reader is None:
                     country_name = "Unknown"
