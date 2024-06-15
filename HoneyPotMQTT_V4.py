@@ -16,6 +16,7 @@ import threading
 from geoip2.database import Reader
 import time
 import requests
+import json
 
 
 
@@ -333,6 +334,51 @@ def parse_mqtt_connect_packet(payload):
         return None, None, None
 
 
+def pkt2dict(pkt) -> dict:
+    packet_dict = {}
+    sublayer = None
+
+    for line in pkt.show2(dump=True).split('\n'):
+        if '###' in line:
+            if '|###' in line:
+                sublayer = line.strip('|#[] ')
+                if sublayer:
+                    packet_dict[layer][sublayer] = {}
+            else:
+                layer = line.strip('#[] ')
+                if layer:
+                    packet_dict[layer] = {}
+        elif '=' in line:
+            key, val = line.split('=', 1)
+            key = key.strip('| ').strip()
+            val = val.strip('\' ')
+
+            if '|' in line and sublayer:
+                packet_dict[layer][sublayer][key] = val
+            else:
+                packet_dict[layer][key] = val
+        else:
+            logging.debug("pkt2dict packet not decoded: " + line)
+
+    # Logic to extract the country from the packet
+    try:
+        if reader is None:
+            country_name = "Unknown"
+        else:
+            # Assuming 'ip_src' is the source IP address field from the packet
+            ip_src = pkt.getlayer('IP').src
+            location = reader.city(ip_src)
+            country_name = location.country.name
+    except Exception as e:
+        country_name = "Unknown"
+        logging.error(f"[pkt2dict] Error on getting the country/city from DB: {e}")
+
+    # Add the country to the dictionary
+    packet_dict['Country'] = country_name
+
+    return json.dumps(packet_dict, separators=(',', ':'))
+
+
 def packet_callback(packet):
     try:
         layers = []
@@ -348,27 +394,28 @@ def packet_callback(packet):
         # Check if the packet has an MQTT layer
         if MQTT in packet:
 
-            if packet[IPv6]:
-                ip_src = packet[IPv6].src
-            elif packet[IP]:
-                ip_src = packet[IP].src
-            else:
-                ip_src = "Unknown"
-
-            try:
-                if reader is None:
-                    country_name = "Unknown"
-                else:
-                    location = reader.city(ip_src)
-                    country_name = location.country.name
-            except Exception as e:
-                country_name = "Unknown"
-                logging.error(f"[packet_callback] Error on getting the country/city from DB: {e}")
+            # if packet[IPv6]:
+            #     ip_src = packet[IPv6].src
+            # elif packet[IP]:
+            #     ip_src = packet[IP].src
+            # else:
+            #     ip_src = "Unknown"
+            #
+            # try:
+            #     if reader is None:
+            #         country_name = "Unknown"
+            #     else:
+            #         location = reader.city(ip_src)
+            #         country_name = location.country.name
+            # except Exception as e:
+            #     country_name = "Unknown"
+            #     logging.error(f"[packet_callback] Error on getting the country/city from DB: {e}")
 
             with mutex:
                 # logging.info(f"Packet captured: {packet.show(dump=True)}")
                 # logging.info(f"Packet captured: {" | ".join(packet.show(dump=True).split("\n"))}")
-                logging.info(f"MQTT Packet Captured from Country={country_name}: {re.sub(r'\s+', ' ', packet.show(dump=True))}")
+                # logging.info(f"MQTT Packet Captured from Country={country_name}: {re.sub(r'\s+', ' ', packet.show(dump=True))}")
+                logging.info(pkt2dict(packet))
 
         # if IP in packet and TCP in packet:
         #     ip_src = packet[IP].src
