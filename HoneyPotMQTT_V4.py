@@ -228,14 +228,17 @@ def on_subscribe(client, userdata, mid, granted_qos):
     try:
         client_ip = client._sock.getpeername()[0] if client._sock else "Unknown"
         client_id = client._client_id.decode("utf-8") if client._client_id else "Unknown"
-        reader = userdata
-
-        # Check if location is None
-        if reader is None:
+        logging.info(f" intra  AICI!!!!!!!!!!!!!!!!!!!!!!!!")
+        try:
+            # Check if location is None
+            if reader is None:
+                country_name = "Unknown"
+            else:
+                location = reader.city(client_ip)
+                country_name = location.country.name
+        except Exception as e:
             country_name = "Unknown"
-        else:
-            location = reader.city(client_ip)
-            country_name = location.country.name
+            logging.error(f"[on_subscribe] Error on getting the country/city from DB: {e}")
 
         if userdata is not None and '#' in userdata:
             root_topic = "#"
@@ -259,7 +262,7 @@ def on_subscribe(client, userdata, mid, granted_qos):
                 client.publish(topic, fake_message)
             logging.warning(f"Sent_dummy_data to the possible Sniff Attacker: IP: {client_ip} | | Client_ID: {client_id} | Country: {country_name}")
     except Exception as e:
-        logging.error(f"[on_subscribe] Error on getting the country/city from DB: {e}")
+        logging.error(f"[on_subscribe] Error : {e}")
 
 
 def on_unsubscribe(client, userdata, mid):
@@ -421,10 +424,19 @@ def packet_callback(packet):
 
 
                 if output['MQTT fixed header']["type"] == "SUBSCRIBE":
-                    #  "MQTT subscribe":{"msgid":"1","MQTT topic":{"length":"1","topic":"#",
                     topic = output["MQTT subscribe"]["MQTT topic"]["topic"]
                     if ip_src != "127.0.0.1" and ip_src != "::1":
                         if topic == "#" or topic.lower().startswith("sys/"):
+                            dummy_topics = {
+                                "home/temperature": lambda: f"{random.uniform(20.0, 25.0):.2f}",
+                                "home/humidity": lambda: f"{random.uniform(30.0, 50.0):.2f}",
+                                "home/door": lambda: random.choice(["open", "closed"]),
+                                "securitySensors/entrance": lambda: random.choice(["open", "closed"]),
+                                "securitySensors/mainRoom": lambda: random.choice(["motionDetected", "motionUndetected"]),
+                                "securitySensors/vault": lambda: random.choice(["open", "closed"]),
+                                "securitySensors/homeAlarm": lambda: random.choice(["on", "off"])
+                            }
+
                             if ip_src not in subscriptions:
                                 subscriptions[ip_src] = []
                             subscriptions[ip_src].append((topic, time.time()))
@@ -432,6 +444,8 @@ def packet_callback(packet):
                                 output['Possible_Attack'] = {}
                             output['Possible_Attack']['attack'] = True
                             output['Possible_Attack']['Possible_Sniff_Attack'] = True
+                            for topic, fake_message in dummy_topics.items():
+                                client.publish(topic, fake_message)
 
                 # logging.info(f"Packet captured: {packet.show(dump=True)}")
                 # logging.info(f"Packet captured: {" | ".join(packet.show(dump=True).split("\n"))}")
@@ -493,9 +507,9 @@ def start_packet_sniffer(interface=None):
         # List available network interfaces
         # logging.info("Available network interfaces:", get_if_list())
 
-        # iface_name = '\\Device\\NPF_Loopback'  # Replace with your network interface name
-        # scapy.sniff(iface=iface_name, filter="tcp port 1883", prn=packet_callback, store=0)  # --> local on my Desktop(W11)
-        scapy.sniff(filter="tcp port 1883", prn=packet_callback, store=0)
+        iface_name = '\\Device\\NPF_Loopback'  # Replace with your network interface name
+        scapy.sniff(iface=iface_name, filter="tcp port 1883", prn=packet_callback, store=0)  # --> local on my Desktop(W11)
+        # scapy.sniff(filter="tcp port 1883", prn=packet_callback, store=0)
     except Exception as e:
         logging.error(f"Packet sniffer error: {e}")
 
@@ -513,8 +527,7 @@ failed_connections = defaultdict(int)
 message_counts = defaultdict(deque)
 login_attempts = defaultdict(list)
 mutex = threading.Lock()
-host = "localhost" #"185.237.15.251" #"localhost"#"test.mosquitto.org"
-port = 1883
+
 
 
 if __name__ == "__main__":
@@ -525,6 +538,8 @@ if __name__ == "__main__":
     """
     Configures the MQTT client with the necessary callbacks and settings.
     """
+    host = "localhost"  # "185.237.15.251" #"localhost"#"test.mosquitto.org"
+    port = 1883
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_publish = on_publish
