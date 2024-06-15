@@ -15,6 +15,7 @@ import threading
 from geoip2.database import Reader
 import time
 import json
+import subprocess
 
 
 
@@ -336,6 +337,26 @@ def parse_mqtt_connect_packet(payload):
         return None, None, None
 
 
+def send_dummy_message(topic, message):
+
+    command = [
+        "mosquitto_pub",
+        "-h", "185.237.15.251",
+        "-u", "validuser",
+        "-P", "validpassword",
+        "-p", "1883",
+        "-t", topic,
+        "-m", message
+    ]
+
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        logging.info(f"Dummy message published to {topic}: {message}")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to publish dummy message to {topic}")
+        logging.error(e.stderr)
+
+
 def pkt2dict(pkt) -> dict:
     packet_dict = {}
     sublayer = None
@@ -445,7 +466,7 @@ def packet_callback(packet):
                             output['Possible_Attack']['attack'] = True
                             output['Possible_Attack']['Possible_Sniff_Attack'] = True
                             for topic, fake_message in dummy_topics.items():
-                                client.publish(topic, fake_message)
+                                send_dummy_message(topic, fake_message)
 
                 # logging.info(f"Packet captured: {packet.show(dump=True)}")
                 # logging.info(f"Packet captured: {" | ".join(packet.show(dump=True).split("\n"))}")
