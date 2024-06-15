@@ -46,7 +46,8 @@ def setup_logging(log_dir="mqtt_honeypot_logs",
 
     log_file_path = os.path.join(log_path, log_file)
     handler = RotatingFileHandler(log_file_path, maxBytes=max_log_size, backupCount=backup_count, encoding='utf-8')
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter('%(message)s')
     handler.setFormatter(formatter)
 
     logging.basicConfig(level=logging.INFO, handlers=[handler])
@@ -364,7 +365,7 @@ def pkt2dict(pkt) -> dict:
             country_name = "Unknown"
         else:
             # Assuming 'ip_src' is the source IP address field from the packet
-            ip_src = pkt.getlayer('IPv6').src
+            ip_src = pkt.getlayer('IP').src
             location = reader.city(ip_src)
             country_name = location.country.name
     except Exception as e:
@@ -389,9 +390,24 @@ def packet_callback(packet):
                     username = output["MQTT connect"]["username"]
                     password = output["MQTT connect"]["password"]
 
+                    message_counts[ip_src].append(time.time())
+                    if len(message_counts[ip_src]) > DOS_THRESHOLD:
+                        message_counts[ip_src].popleft()
+
+                    if len(message_counts[ip_src]) > 1:
+                        time_delta = message_counts[ip_src][-1] - message_counts[ip_src][0]
+                        if time_delta < 1:
+                            if 'Possible_Attack' not in output:
+                                output['Possible_Attack'] = {}
+                            output['Possible_Attack']['attack'] = True
+                            output['Possible_Attack']['Possible_DoS_Attack'] = True
+                            output['Possible_Attack']['number_of_messages'] = len(message_counts[ip_src])
+                            output['Possible_Attack']['time_delta(ms)'] = time_delta
+
                     if username != VALID_USERNAME or password != VALID_PASSWORD:
                         failed_connections[ip_src] += 1
                         login_attempts[ip_src].append((username, password))
+                        last_trigger = time.time()
                         logging.warning(f"Authentication= Failed ==> IP_src= {ip_src} | number_of_tries= {failed_connections[ip_src]} | username= {username} | password= {password}")
                         if failed_connections[ip_src] > BRUTE_FORCE_THRESHOLD:
                             if 'Possible_Attack' not in output:
@@ -399,20 +415,10 @@ def packet_callback(packet):
                             output['Possible_Attack']['attack'] = True
                             output['Possible_Attack']['Possible_Brute_Force_Attack'] = True
                             output['Possible_Attack']['number_of_tries'] = failed_connections[ip_src]
+                        else:
+                            if time.time() - last_trigger > 100:
+                                failed_connections[ip_src] = 0
 
-                    message_counts[ip_src].append(time.time())
-                    if len(message_counts[ip_src]) > DOS_THRESHOLD:
-                        message_counts[ip_src].popleft()
-
-                    if len(message_counts[ip_src]) > 1:
-                        time_delta = message_counts[ip_src][-1] - message_counts[ip_src][0]
-                        if time_delta < 0.001:
-                            if 'Possible_Attack' not in output:
-                                output['Possible_Attack'] = {}
-                            output['Possible_Attack']['attack'] = True
-                            output['Possible_Attack']['Possible_DoS_Attack'] = True
-                            output['Possible_Attack']['number_of_messages'] = len(message_counts[ip_src])
-                            output['Possible_Attack']['time_delta(ms)'] = time_delta
 
                 if output['MQTT fixed header']["type"] == "SUBSCRIBE":
                     #  "MQTT subscribe":{"msgid":"1","MQTT topic":{"length":"1","topic":"#",
@@ -496,7 +502,7 @@ def start_packet_sniffer(interface=None):
 
 
 # Global settings and state
-DOS_THRESHOLD = 100
+DOS_THRESHOLD = 10
 BRUTE_FORCE_THRESHOLD = 10
 VALID_USERNAME = "validuser"
 VALID_PASSWORD = "validpassword"
