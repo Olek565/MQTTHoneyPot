@@ -1,7 +1,6 @@
 import paho.mqtt.client as mqtt
 import logging
 import re
-import logging_loki
 from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime, timedelta
@@ -15,7 +14,6 @@ import random
 import threading
 from geoip2.database import Reader
 import time
-import requests
 import json
 
 
@@ -366,7 +364,7 @@ def pkt2dict(pkt) -> dict:
             country_name = "Unknown"
         else:
             # Assuming 'ip_src' is the source IP address field from the packet
-            ip_src = pkt.getlayer('IP').src
+            ip_src = pkt.getlayer('IPv6').src
             location = reader.city(ip_src)
             country_name = location.country.name
     except Exception as e:
@@ -376,46 +374,67 @@ def pkt2dict(pkt) -> dict:
     # Add the country to the dictionary
     packet_dict['Country'] = country_name
 
-    return json.dumps(packet_dict, separators=(',', ':'))
+    return packet_dict
 
 
 def packet_callback(packet):
     try:
-        layers = []
-        if Ether in packet:
-            layers.append(packet[Ether].summary())
-        if IP in packet:
-            layers.append(packet[IP].summary())
-        if TCP in packet:
-            layers.append(packet[TCP].summary())
-        if Raw in packet:
-            layers.append(packet[Raw].summary())
-
         # Check if the packet has an MQTT layer
         if MQTT in packet:
-
-            # if packet[IPv6]:
-            #     ip_src = packet[IPv6].src
-            # elif packet[IP]:
-            #     ip_src = packet[IP].src
-            # else:
-            #     ip_src = "Unknown"
-            #
-            # try:
-            #     if reader is None:
-            #         country_name = "Unknown"
-            #     else:
-            #         location = reader.city(ip_src)
-            #         country_name = location.country.name
-            # except Exception as e:
-            #     country_name = "Unknown"
-            #     logging.error(f"[packet_callback] Error on getting the country/city from DB: {e}")
-
             with mutex:
+                output = pkt2dict(packet)
+                ip_src = output['IP']["src"]
+
+                if output['MQTT fixed header']["type"] == "CONNECT":
+                    username = output["MQTT connect"]["username"]
+                    password = output["MQTT connect"]["password"]
+
+                    if username != VALID_USERNAME or password != VALID_PASSWORD:
+                        failed_connections[ip_src] += 1
+                        login_attempts[ip_src].append((username, password))
+                        logging.warning(f"Authentication= Failed ==> IP_src= {ip_src} | number_of_tries= {failed_connections[ip_src]} | username= {username} | password= {password}")
+                        if failed_connections[ip_src] > BRUTE_FORCE_THRESHOLD:
+                            if 'Possible_Attack' not in output:
+                                output['Possible_Attack'] = {}
+                            output['Possible_Attack']['attack'] = True
+                            output['Possible_Attack']['Possible_Brute_Force_Attack'] = True
+                            output['Possible_Attack']['number_of_tries'] = failed_connections[ip_src]
+
+                    message_counts[ip_src].append(time.time())
+                    if len(message_counts[ip_src]) > DOS_THRESHOLD:
+                        message_counts[ip_src].popleft()
+
+                    if len(message_counts[ip_src]) > 1:
+                        time_delta = message_counts[ip_src][-1] - message_counts[ip_src][0]
+                        if time_delta < 0.001:
+                            if 'Possible_Attack' not in output:
+                                output['Possible_Attack'] = {}
+                            output['Possible_Attack']['attack'] = True
+                            output['Possible_Attack']['Possible_DoS_Attack'] = True
+                            output['Possible_Attack']['number_of_messages'] = len(message_counts[ip_src])
+                            output['Possible_Attack']['time_delta(ms)'] = time_delta
+
+                if output['MQTT fixed header']["type"] == "SUBSCRIBE":
+                    #  "MQTT subscribe":{"msgid":"1","MQTT topic":{"length":"1","topic":"#",
+                    topic = output["MQTT subscribe"]["MQTT topic"]["topic"]
+                    if ip_src != "127.0.0.1" and ip_src != "::1":
+                        if topic == "#" or topic.lower().startswith("sys/"):
+                            if ip_src not in subscriptions:
+                                subscriptions[ip_src] = []
+                            subscriptions[ip_src].append((topic, time.time()))
+                            if 'Possible_Attack' not in output:
+                                output['Possible_Attack'] = {}
+                            output['Possible_Attack']['attack'] = True
+                            output['Possible_Attack']['Possible_Sniff_Attack'] = True
+
                 # logging.info(f"Packet captured: {packet.show(dump=True)}")
                 # logging.info(f"Packet captured: {" | ".join(packet.show(dump=True).split("\n"))}")
                 # logging.info(f"MQTT Packet Captured from Country={country_name}: {re.sub(r'\s+', ' ', packet.show(dump=True))}")
-                logging.info(pkt2dict(packet))
+
+                #logging.info(pkt2dict(packet))
+                logging.info(json.dumps(output, separators=(',', ':')))
+
+
 
         # if IP in packet and TCP in packet:
         #     ip_src = packet[IP].src
@@ -467,9 +486,10 @@ def start_packet_sniffer(interface=None):
         # scapy.sniff(iface=interface, filter="host localhost", prn=packet_callback, store=0)
         # List available network interfaces
         # logging.info("Available network interfaces:", get_if_list())
-        iface_name = '\\Device\\NPF_Loopback'  # Replace with your network interface name
 
-        scapy.sniff(iface=iface_name, filter="tcp port 1883", prn=packet_callback, store=0)
+        # iface_name = '\\Device\\NPF_Loopback'  # Replace with your network interface name
+        # scapy.sniff(iface=iface_name, filter="tcp port 1883", prn=packet_callback, store=0)  # --> local on my Desktop(W11)
+        scapy.sniff(filter="tcp port 1883", prn=packet_callback, store=0)
     except Exception as e:
         logging.error(f"Packet sniffer error: {e}")
 
@@ -482,6 +502,7 @@ VALID_USERNAME = "validuser"
 VALID_PASSWORD = "validpassword"
 
 connections = defaultdict(int)
+subscriptions = {}
 failed_connections = defaultdict(int)
 message_counts = defaultdict(deque)
 login_attempts = defaultdict(list)
@@ -512,6 +533,7 @@ if __name__ == "__main__":
         # client.connect("185.237.15.251", 1883, 60)
 
         try:
+            client.username_pw_set(VALID_USERNAME, VALID_PASSWORD)
             client.connect(host, port, 60)
             logging.info(f"Successfully connected to MQTT broker at {host}:{port}")
         except Exception as e:
